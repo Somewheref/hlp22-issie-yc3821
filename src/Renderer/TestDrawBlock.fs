@@ -237,11 +237,17 @@ module HLPTick3 =
 
         // Rotate a symbol
         let rotateSymbol (symLabel: string) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+            let symbolModel = model.Wire.Symbol
+            let rotated = RotateScale.rotateBlock [ComponentId symLabel] symbolModel rotate
+            model
+
 
         // Flip a symbol
         let flipSymbol (symLabel: string) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+            let symbolModel = model.Wire.Symbol
+            let flipped = RotateScale.flipBlock [ComponentId symLabel] symbolModel flip
+            model
+
 
         /// Add a (newly routed) wire, source specifies the Output port, target the Input port.
         /// Return an error if either of the two ports specified is invalid, or if the wire duplicates and existing one.
@@ -339,6 +345,108 @@ module HLPTick3 =
         |> getOkOrFail
 
 
+    /// my custom automated test circuit
+    /// Create sample data in a Gen<'a> type to test routing between two ports on two different components. This will be as in the examples but with the 2nd component placed anywhere around the first component using a rectangular 2D grid created from samples using GenerateData.product.
+    let makeTest2Circuit (andPos:XYPos) =
+        let gridSize = 20
+        let maxGrid = gridSize * 5
+        let firstComponentPos = middleOfSheet + {X=0.;Y=0.}
+        let sampleData1 = GenerateData.randomInt (-maxGrid) gridSize maxGrid
+        let sampleData2 = GenerateData.randomInt (-maxGrid) gridSize maxGrid
+        let symbl2pos = GenerateData.product (fun pos1 pos2 -> (pos1,pos2)) sampleData1 sampleData2
+        // get XYPos from symbl2pos
+        let symbl2posXY = symbl2pos |> map (fun (x,y) -> firstComponentPos + {X=float x; Y=float y})
+        // select a random position from the list of positions
+        let randomPos = symbl2posXY.Data 0
+        initSheetModel
+        |> placeSymbol "G1" (GateN(And,2)) andPos
+        |> Result.bind (placeSymbol "FF1" DFF randomPos)
+        |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+        |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+        |> getOkOrFail
+
+
+    let GetXYPosDistance (pos1: XYPos) (pos2: XYPos) =
+        sqrt ((pos1.X - pos2.X) ** 2. + (pos1.Y - pos2.Y) ** 2.)
+
+    /// my custom automated test circuit - this one prevents overlapping
+    /// Create sample data in a Gen<'a> type to test routing between two ports on two different components. This will be as in the examples but with the 2nd component placed anywhere around the first component using a rectangular 2D grid created from samples using GenerateData.product.
+    let makeTest3Circuit (andPos:XYPos) =
+        let gridSize = 20
+        let maxGrid = gridSize * 10
+        let firstComponentPos = middleOfSheet + {X=0.;Y=0.}
+        let sampleData1 = GenerateData.randomInt (-maxGrid) gridSize maxGrid
+        let sampleData2 = GenerateData.randomInt (-maxGrid) gridSize maxGrid
+        let symbl2pos = GenerateData.product (fun pos1 pos2 -> (pos1,pos2)) sampleData1 sampleData2
+        // get XYPos from symbl2pos
+        let symbl2posXY = symbl2pos |> map (fun (x,y) -> firstComponentPos + {X=float x; Y=float y})
+
+        let minDist = 100
+        // filter out positions that are too close to the first component
+        let symbl2posXYFiltered = GenerateData.filter (fun xyPos -> GetXYPosDistance xyPos firstComponentPos > minDist) symbl2posXY
+
+        // select a random position from the list of positions
+        let randomPos = symbl2posXYFiltered.Data 0
+
+        initSheetModel
+        |> placeSymbol "G1" (GateN(And,2)) andPos
+        |> Result.bind (placeSymbol "FF1" DFF randomPos)
+        |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+        |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+        |> getOkOrFail
+
+
+    /// my custom automated test circuit - this one also do rotation and flipping
+    /// Create sample data in a Gen<'a> type to test routing between two ports on two different components. This will be as in the examples but with the 2nd component placed anywhere around the first component using a rectangular 2D grid created from samples using GenerateData.product.
+    let makeTest4Circuit (andPos:XYPos) =
+        let gridSize = 20
+        let maxGrid = gridSize * 10
+        let firstComponentPos = middleOfSheet + {X=0.;Y=0.}
+        let sampleData1 = GenerateData.randomInt (-maxGrid) gridSize maxGrid
+        let sampleData2 = GenerateData.randomInt (-maxGrid) gridSize maxGrid
+        let symbl2pos = GenerateData.product (fun pos1 pos2 -> (pos1,pos2)) sampleData1 sampleData2
+        // get XYPos from symbl2pos
+        let symbl2posXY = symbl2pos |> map (fun (x,y) -> firstComponentPos + {X=float x; Y=float y})
+
+        let minDist = 100
+        // filter out positions that are too close to the first component
+        let symbl2posXYFiltered = GenerateData.filter (fun xyPos -> GetXYPosDistance xyPos firstComponentPos > minDist) symbl2posXY
+
+        // select a random position from the list of positions
+        let randomPos = symbl2posXYFiltered.Data 0
+
+        // random rotation
+        let randomRotation = GenerateData.randomInt 0 90 270
+        let randomFlip = GenerateData.randomInt 0 1 1
+
+        let rotate =
+            match randomRotation.Data 0 with
+            | 0 -> Rotation.Degree0
+            | 90 -> Rotation.Degree90
+            | 180 -> Rotation.Degree180
+            | 270 -> Rotation.Degree270
+            | _ -> failwith "Invalid rotation"
+
+        let flip =
+            match randomFlip.Data 0 with
+            | 0 -> SymbolT.FlipType.FlipHorizontal
+            | 1 -> SymbolT.FlipType.FlipVertical
+            | _ -> failwith "Invalid flip"
+
+        let st = initSheetModel
+        let andSym = placeSymbol "G1" (GateN(And,2)) andPos st
+
+        let result =
+            match andSym with
+            | Ok andModel -> rotateSymbol "G1" rotate andModel |> flipSymbol "G1" flip
+            | Error mess -> failwith mess
+
+        result
+        |> placeSymbol "FF1" DFF randomPos
+        |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+        |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+        |> getOkOrFail
+
 
 //------------------------------------------------------------------------------------------------//
 //-------------------------Example assertions used to test sheets---------------------------------//
@@ -362,6 +470,9 @@ module HLPTick3 =
         let failOnAllTests (sample: int) _ =
             Some <| $"Sample {sample}"
 
+        /// ----------------
+        /// comment: seems like we already have this assertion when wire segment overlaps symbol outline?
+        /// ----------------
         /// Fail when sheet contains a wire segment that overlaps (or goes too close to) a symbol outline  
         let failOnWireIntersectsSymbol (sample: int) (sheet: SheetT.Model) =
             let wireModel = sheet.Wire
@@ -408,7 +519,7 @@ module HLPTick3 =
                 "Horizontally positioned AND + DFF: fail on sample 0"
                 firstSample
                 horizLinePositions
-                makeTest1Circuit
+                makeTest2Circuit
                 (Asserts.failOnSampleNumber 0)
                 dispatch
             |> recordPositionInTest testNum dispatch
@@ -419,7 +530,7 @@ module HLPTick3 =
                 "Horizontally positioned AND + DFF: fail on sample 10"
                 firstSample
                 horizLinePositions
-                makeTest1Circuit
+                makeTest3Circuit
                 (Asserts.failOnSampleNumber 10)
                 dispatch
             |> recordPositionInTest testNum dispatch
@@ -430,7 +541,7 @@ module HLPTick3 =
                 "Horizontally positioned AND + DFF: fail on symbols intersect"
                 firstSample
                 horizLinePositions
-                makeTest1Circuit
+                makeTest3Circuit
                 Asserts.failOnSymbolIntersectsSymbol
                 dispatch
             |> recordPositionInTest testNum dispatch
@@ -441,13 +552,35 @@ module HLPTick3 =
                 "Horizontally positioned AND + DFF: fail all tests"
                 firstSample
                 horizLinePositions
-                makeTest1Circuit
+                makeTest4Circuit
                 Asserts.failOnAllTests
+                dispatch
+            |> recordPositionInTest testNum dispatch
+
+
+        let test5 testNum firstSample dispatch =
+            runTestOnSheets
+                "Horizontally positioned AND + DFF: fail all tests"
+                firstSample
+                horizLinePositions
+                makeTest3Circuit
+                Asserts.failOnWireIntersectsSymbol
                 dispatch
             |> recordPositionInTest testNum dispatch
 
         /// List of tests available which can be run ftom Issie File Menu.
         /// The first 9 tests can also be run via Ctrl-n accelerator keys as shown on menu
+        ///
+        /// ------------------------------------------------------------------------------------
+        /// Q8 explanation:
+        /// The trace tree from a key being pressed to the test being run is:
+        /// Program.mkProgram init update view' -> Program.withSubscription attachMenusAndKeyShortcuts -> attachMenusAndKeyShortcuts
+        /// -> fileMenu -> makeMenu -> makeMenuGen -> testsToRunFromSheetMenu -> test1 - test8
+        ///
+        /// Considering the fact that cross-module forward references are not allowed, Issie navigates this by defining the function that
+        /// holds all the references in here, which is complied at a later order. The makeMenuGen function also serves as a higher-order function
+        /// that creates a generic, reusable component that elegently handles different use cases including testing like this one.
+        /// ------------------------------------------------------------------------------------
         let testsToRunFromSheetMenu : (string * (int -> int -> Dispatch<Msg> -> Unit)) list =
             // Change names and test functions as required
             // delete unused tests from list
@@ -456,7 +589,7 @@ module HLPTick3 =
                 "Test2", test2 // example
                 "Test3", test3 // example
                 "Test4", test4 
-                "Test5", fun _ _ _ -> printf "Test5" // dummy test - delete line or replace by real test as needed
+                "Test5", test5
                 "Test6", fun _ _ _ -> printf "Test6"
                 "Test7", fun _ _ _ -> printf "Test7"
                 "Test8", fun _ _ _ -> printf "Test8"
